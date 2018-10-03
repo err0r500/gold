@@ -50,6 +50,7 @@ func TestMimeSerializerExpect(t *testing.T) {
 }
 
 func TestMapPathToExtension(t *testing.T) {
+	config = NewServerConfig()
 	// empty	nil 	empty + error msg
 	path := ""
 	ctype := ""

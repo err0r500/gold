@@ -32,7 +32,7 @@ type AnyGraph interface {
 }
 
 var (
-	httpClient = &http.Client{
+	httpClient = http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,

@@ -8,6 +8,8 @@ import (
 )
 
 func TestCORSRequestHasOrigin(t *testing.T) {
+	testServer := getFreshServer()
+
 	requestOrigin := "https://example.com"
 	url := testServer.URL + "/_test/user1"
 	req, err := http.NewRequest("GET", url, nil)
@@ -19,6 +21,8 @@ func TestCORSRequestHasOrigin(t *testing.T) {
 }
 
 func TestCORSRequestHasNoOrigin(t *testing.T) {
+	testServer := getFreshServer()
+
 	url := testServer.URL + "/_test/user1"
 	req, err := http.NewRequest("GET", url, nil)
 	assert.NoError(t, err)
@@ -28,6 +32,8 @@ func TestCORSRequestHasNoOrigin(t *testing.T) {
 }
 
 func TestVaryHeader(t *testing.T) {
+	testServer := getFreshServer()
+
 	url := testServer.URL + "/_test/user1"
 	req, err := http.NewRequest("GET", url, nil)
 	assert.NoError(t, err)

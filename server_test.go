@@ -30,76 +30,121 @@ var (
 	handler              *Server
 )
 
-func init() {
-	config = NewServerConfig()
-	handler = NewServer(config)
+const (
+	testFolderPath = "_test"
+)
 
-	testServer = httptest.NewUnstartedServer(handler)
+//func init() {
+//	config = NewServerConfig()
+//	handler = NewServer(config)
+//
+//	testServer = httptest.NewUnstartedServer(handler)
+//	testServer.TLS = new(tls.Config)
+//	testServer.TLS.ClientAuth = tls.RequestClientCert
+//	testServer.TLS.NextProtos = []string{"http/1.1"}
+//	testServer.StartTLS()
+//	testServer.URL = strings.Replace(testServer.URL, "127.0.0.1", "localhost", 1)
+//}
+
+func getFreshServer() *httptest.Server {
+	os.RemoveAll(testFolderPath + "/")
+
+	testServer := httptest.NewUnstartedServer(
+		NewServer(
+			NewServerConfig(),
+		),
+	)
+
 	testServer.TLS = new(tls.Config)
 	testServer.TLS.ClientAuth = tls.RequestClientCert
 	testServer.TLS.NextProtos = []string{"http/1.1"}
 	testServer.StartTLS()
 	testServer.URL = strings.Replace(testServer.URL, "127.0.0.1", "localhost", 1)
+	return testServer
 }
 
-// func noRedirect(req *http.Request, via []*http.Request) error {
-// 	return errors.New("Don't redirect!")
-// }
+// not very clean, but enough for testing
+func getFreshServerWithConfig() (*httptest.Server, *ServerConfig) {
+	return getFreshServer(), NewServerConfig()
+}
 
 func TestHSTS(t *testing.T) {
-	request, err := http.NewRequest("HEAD", testServer.URL+"/", nil)
-	assert.NoError(t, err)
-	response, err := httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, "max-age=63072000; includeSubDomains", response.Header.Get("Strict-Transport-Security"))
+	testServer := getFreshServer()
+
+	t.Run("anyone asks for details, hsts returned", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", testServer.URL+"/", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, "max-age=63072000; includeSubDomains", response.Header.Get("Strict-Transport-Security"))
+	})
 }
 
 func TestMKCOL(t *testing.T) {
-	request, err := http.NewRequest("MKCOL", testServer.URL+"/_test", nil)
-	assert.NoError(t, err)
-	response, err := httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 201, response.StatusCode)
+	testServer := getFreshServer()
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", strings.NewReader("<a> <b> <c>."))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/turtle")
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 201, response.StatusCode)
+	t.Run("anyone creates a collection", func(t *testing.T) {
+		request, err := http.NewRequest("MKCOL", testServer.URL+"/"+testFolderPath+"", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("MKCOL", testServer.URL+"/_test/abc", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 409, response.StatusCode)
+	t.Run("anyone can create a resource in the collection", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<a> <b> <c>."))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/turtle")
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("anyone fails to create a collection when the resource exists already", func(t *testing.T) {
+		request, err := http.NewRequest("MKCOL", testServer.URL+"/"+testFolderPath+"/abc", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 409, response.StatusCode)
+	})
+
+	t.Run("anyone can retrieve the collection", func(t *testing.T) {
+		request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath, nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+	})
 }
 
 func TestOPTIONS(t *testing.T) {
-	request, err := http.NewRequest("OPTIONS", testServer.URL+"/", nil)
-	assert.NoError(t, err)
-	request.Header.Add("Accept", "text/turtle")
-	request.Header.Add("Access-Control-Request-Method", "PATCH")
-	response, err := httpClient.Do(request)
-	assert.NoError(t, err)
-	body, err := ioutil.ReadAll(response.Body)
-	response.Body.Close()
-	assert.Empty(t, string(body))
-	assert.Equal(t, 200, response.StatusCode)
+	testServer := getFreshServer()
+
+	t.Run("the server supports options", func(t *testing.T) {
+		request, err := http.NewRequest("OPTIONS", testServer.URL+"/", nil)
+		assert.NoError(t, err)
+		request.Header.Add("Accept", "text/turtle")
+		request.Header.Add("Access-Control-Request-Method", "PATCH")
+
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		body, err := ioutil.ReadAll(response.Body)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Empty(t, string(body))
+		assert.Equal(t, 200, response.StatusCode)
+	})
 }
 
 func TestOPTIONSOrigin(t *testing.T) {
 	origin := "http://localhost:1234"
+	testServer := getFreshServer()
+
 	request, err := http.NewRequest("OPTIONS", testServer.URL+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("Origin", origin)
+
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
@@ -107,14 +152,16 @@ func TestOPTIONSOrigin(t *testing.T) {
 }
 
 func TestURIwithSpaces(t *testing.T) {
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/file name", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/file name", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/file name", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/file name", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -122,14 +169,16 @@ func TestURIwithSpaces(t *testing.T) {
 }
 
 func TestURIwithWeirdChars(t *testing.T) {
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/file name + %23frag", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/file name + %23frag", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/file name + %23frag", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/file name + %23frag", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -137,14 +186,16 @@ func TestURIwithWeirdChars(t *testing.T) {
 }
 
 func TestIndexHTMLFile(t *testing.T) {
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/index.html", strings.NewReader("<html>Hello world!</html>"))
+	testServer, config := getFreshServerWithConfig()
+
+	request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/index.html", strings.NewReader("<html>Hello world!</html>"))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/html")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/html")
 	response, err = httpClient.Do(request)
@@ -159,75 +210,93 @@ func TestIndexHTMLFile(t *testing.T) {
 }
 
 func TestWebContent(t *testing.T) {
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/alert.js", strings.NewReader("alert('test');"))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "application/javascript")
-	response, err := httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 201, response.StatusCode)
+	testServer := getFreshServer()
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/text.txt", strings.NewReader("foo bar"))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/txt")
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 201, response.StatusCode)
+	t.Run("use PUT to create a new js file", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/alert.js", strings.NewReader("alert('test');"))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "application/javascript")
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/reset.css", strings.NewReader("* { padding: 0; }"))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/css")
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 201, response.StatusCode)
+	t.Run("use PUT to create a new txt file", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/text.txt", strings.NewReader("foo bar"))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/txt")
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/alert.js", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
-	assert.Contains(t, response.Header.Get("Content-Type"), "application/javascript")
+	t.Run("use PUT to create a new css file", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/reset.css", strings.NewReader("* { padding: 0; }"))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/css")
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/text.txt", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
-	assert.Contains(t, response.Header.Get("Content-Type"), "text/plain")
+	t.Run("GET the js file", func(t *testing.T) {
+		request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/alert.js", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+		assert.Contains(t, response.Header.Get("Content-Type"), "application/javascript")
+	})
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/reset.css", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
-	assert.Contains(t, response.Header.Get("Content-Type"), "text/css; charset=utf-8")
+	t.Run("GET the txt file", func(t *testing.T) {
+		request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/text.txt", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+		assert.Contains(t, response.Header.Get("Content-Type"), "text/plain")
+	})
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/alert.js", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("GET the CSS file", func(t *testing.T) {
+		request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/reset.css", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+		assert.Contains(t, response.Header.Get("Content-Type"), "text/css; charset=utf-8")
+	})
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/reset.css", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("DELETE the js file", func(t *testing.T) {
+		request, err := http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/alert.js", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/text.txt", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("DELETE the css file", func(t *testing.T) {
+		request, err := http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/reset.css", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/index.html", nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("DELETE the txt file", func(t *testing.T) {
+		request, err := http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/text.txt", nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		assert.Equal(t, 200, response.StatusCode)
+	})
 }
 
 func TestRedirectSignUpWithVhosts(t *testing.T) {
 	// test vhosts
+	testServer := getFreshServer()
+	_, user1h, _, err := GetClient(TestUser1, testServer.URL+"/"+testFolderPath, false)
+	assert.NoError(t, err)
+
 	testServer1 := httptest.NewUnstartedServer(handler1)
 	testServer1.TLS = new(tls.Config)
 	testServer1.TLS.ClientAuth = tls.RequestClientCert
@@ -261,19 +330,21 @@ func TestRedirectSignUpWithVhosts(t *testing.T) {
 }
 
 func TestRedirectToSlashContainer(t *testing.T) {
+	testServer := getFreshServer()
+
 	transport := http.Transport{}
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 
-	request, err := http.NewRequest("GET", testServer.URL+"/_test", nil)
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath, nil)
 	assert.NoError(t, err)
 	response, err := transport.RoundTrip(request)
 	assert.NoError(t, err)
 	body, _ := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 	assert.Equal(t, 301, response.StatusCode)
-	assert.Equal(t, testServer.URL+"/_test/", response.Header.Get("Location"))
+	assert.Equal(t, testServer.URL+"/"+testFolderPath+"/", response.Header.Get("Location"))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/html")
 	response, err = transport.RoundTrip(request)
@@ -281,25 +352,27 @@ func TestRedirectToSlashContainer(t *testing.T) {
 	body, _ = ioutil.ReadAll(response.Body)
 	response.Body.Close()
 	assert.Equal(t, 301, response.StatusCode)
-	assert.Equal(t, testServer.URL+"/_test/", response.Header.Get("Location"))
+	assert.Equal(t, getFreshServer().URL+"/"+testFolderPath+"/", response.Header.Get("Location"))
 	assert.NotEmpty(t, string(body))
 }
 
 func TestRedirectToDirApp(t *testing.T) {
+	testServer, config := getFreshServerWithConfig()
 	transport := http.Transport{}
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/html")
 	response, err := transport.RoundTrip(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 303, response.StatusCode)
-	assert.True(t, strings.HasPrefix(response.Header.Get("Location"), handler.Config.DirApp))
+	assert.True(t, strings.HasPrefix(response.Header.Get("Location"), config.DirApp))
 }
 
 func TestLDPPUTContainer(t *testing.T) {
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/", nil)
+	testServer, config := getFreshServerWithConfig()
+	request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err := httpClient.Do(request)
@@ -309,7 +382,7 @@ func TestLDPPUTContainer(t *testing.T) {
 	describedURI := ParseLinkHeader(response.Header.Get("Link")).MatchRel("describedby")
 	assert.NotNil(t, describedURI)
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/dir", nil)
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/dir", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Link", "<http://www.w3.org/ns/ldp#BasicContainer>; rel=\"type\"")
 	request.Header.Add("Content-Type", "text/turtle")
@@ -318,12 +391,12 @@ func TestLDPPUTContainer(t *testing.T) {
 	assert.Equal(t, 201, response.StatusCode)
 
 	metaURI := ParseLinkHeader(response.Header.Get("Link")).MatchRel("meta")
-	assert.Equal(t, testServer.URL+"/_test/dir/"+config.MetaSuffix, metaURI)
+	assert.Equal(t, testServer.URL+"/"+testFolderPath+"/dir/"+config.MetaSuffix, metaURI)
 
 	aclURI := ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
-	assert.Equal(t, testServer.URL+"/_test/dir/"+config.ACLSuffix, aclURI)
+	assert.Equal(t, testServer.URL+"/"+testFolderPath+"/dir/"+config.ACLSuffix, aclURI)
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/dir/", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/dir/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -331,7 +404,8 @@ func TestLDPPUTContainer(t *testing.T) {
 }
 
 func TestLDPPostLDPC(t *testing.T) {
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> .\n\n<> a <http://example.org/ldpc>."))
+	testServer, config := getFreshServerWithConfig()
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> .\n\n<> a <http://example.org/ldpc>."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	request.Header.Add("Slug", "ldpc")
@@ -347,7 +421,7 @@ func TestLDPPostLDPC(t *testing.T) {
 	metaURI := ParseLinkHeader(response.Header.Get("Link")).MatchRel("meta")
 	assert.Equal(t, newLDPC+config.MetaSuffix, metaURI)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -357,9 +431,9 @@ func TestLDPPostLDPC(t *testing.T) {
 	assert.NoError(t, err)
 	response.Body.Close()
 
-	g := NewGraph(testServer.URL + "/_test/")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
-	assert.NotNil(t, g.One(NewResource(testServer.URL+"/_test/"), NewResource("http://www.w3.org/ns/ldp#contains"), NewResource(newLDPC)))
+	assert.NotNil(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/"), NewResource("http://www.w3.org/ns/ldp#contains"), NewResource(newLDPC)))
 	assert.NotNil(t, g.One(NewResource(newLDPC), NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"), NewResource("http://example.org/ldpc")))
 	assert.NotNil(t, g.One(NewResource(newLDPC), NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"), NewResource("http://www.w3.org/ns/ldp#BasicContainer")))
 	request, err = http.NewRequest("HEAD", metaURI, nil)
@@ -387,7 +461,8 @@ func TestLDPPostLDPC(t *testing.T) {
 }
 
 func TestLDPPostLDPRWithSlug(t *testing.T) {
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/two>."))
+	testServer := getFreshServer()
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/two>."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	request.Header.Add("Slug", "ldpr")
@@ -409,7 +484,7 @@ func TestLDPPostLDPRWithSlug(t *testing.T) {
 	response.Body.Close()
 	assert.Equal(t, string(body), "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<>\n    a <http://example.org/two> .\n\n")
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	request.Header.Add("Slug", "ldpr")
@@ -437,7 +512,8 @@ func TestLDPPostLDPRWithSlug(t *testing.T) {
 }
 
 func TestLDPPostLDPRNoSlug(t *testing.T) {
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/two>."))
+	testServer := getFreshServer()
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/two>."))
 	request.Header.Add("Content-Type", "text/turtle")
 	request.Header.Add("Link", "<http://www.w3.org/ns/ldp#Resource>; rel=\"type\"")
 	response, err := httpClient.Do(request)
@@ -464,7 +540,8 @@ func TestLDPPostLDPRNoSlug(t *testing.T) {
 }
 
 func TestLDPGetLDPR(t *testing.T) {
-	resource_url := testServer.URL + "/_test/resource.ttl"
+	testServer := getFreshServer()
+	resource_url := testServer.URL + "/" + testFolderPath + "/resource.ttl"
 
 	request, err := http.NewRequest("PUT", resource_url, nil)
 	assert.NoError(t, err)
@@ -485,7 +562,8 @@ func TestLDPGetLDPR(t *testing.T) {
 }
 
 func TestLDPGetLDPC(t *testing.T) {
-	request, err := http.NewRequest("HEAD", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+	request, err := http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
@@ -501,7 +579,7 @@ func TestLDPGetLDPC(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -511,10 +589,10 @@ func TestLDPGetLDPC(t *testing.T) {
 	body, err := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 
-	g := NewGraph(testServer.URL + "/_test/")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
 	assert.Nil(t, g.One(NewResource(meta), nil, nil))
-	assert.NotNil(t, g.One(NewResource(testServer.URL+"/_test/"), NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"), NewResource("http://www.w3.org/ns/ldp#BasicContainer")))
+	assert.NotNil(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/"), NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"), NewResource("http://www.w3.org/ns/ldp#BasicContainer")))
 
 	request, err = http.NewRequest("DELETE", meta, nil)
 	response, err = httpClient.Do(request)
@@ -524,7 +602,8 @@ func TestLDPGetLDPC(t *testing.T) {
 }
 
 func TestLDPPreferContainmentHeader(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("Prefer", "return=representation; omit=\"http://www.w3.org/ns/ldp#PreferEmptyContainer\", return=representation; include=\"http://www.w3.org/ns/ldp#PreferContainment\"")
@@ -533,14 +612,14 @@ func TestLDPPreferContainmentHeader(t *testing.T) {
 	assert.Equal(t, 200, response.StatusCode)
 	assert.Equal(t, "return=representation", response.Header.Get("Preference-Applied"))
 
-	g := NewGraph(testServer.URL + "/_test/")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/")
 
 	body, err := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
-	assert.NotNil(t, g.One(NewResource(testServer.URL+"/_test/"), NewResource("http://www.w3.org/ns/ldp#contains"), nil))
+	assert.NotNil(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/"), NewResource("http://www.w3.org/ns/ldp#contains"), nil))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("Prefer", "return=representation; include=\"http://www.w3.org/ns/ldp#PreferEmptyContainer\", return=representation; omit=\"http://www.w3.org/ns/ldp#PreferContainment\"")
@@ -551,13 +630,15 @@ func TestLDPPreferContainmentHeader(t *testing.T) {
 	assert.Equal(t, "return=representation", response.Header.Get("Preference-Applied"))
 	body, err = ioutil.ReadAll(response.Body)
 	response.Body.Close()
-	g = NewGraph(testServer.URL + "/_test/")
+	g = NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
-	assert.Nil(t, g.One(NewResource(testServer.URL+"/_test/"), NewResource("http://www.w3.org/ns/ldp#contains"), nil))
+	assert.Nil(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/"), NewResource("http://www.w3.org/ns/ldp#contains"), nil))
 }
 
 func TestLDPPreferEmptyHeader(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("Prefer", "return=representation; omit=\"http://www.w3.org/ns/ldp#PreferEmptyContainer\"")
@@ -566,13 +647,13 @@ func TestLDPPreferEmptyHeader(t *testing.T) {
 	assert.Equal(t, 200, response.StatusCode)
 	assert.Equal(t, "return=representation", response.Header.Get("Preference-Applied"))
 
-	g := NewGraph(testServer.URL + "/_test/")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	body, err := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
-	assert.NotNil(t, g.One(NewResource(testServer.URL+"/_test/abc"), nil, nil))
+	assert.NotNil(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/abc"), nil, nil))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("Prefer", "return=representation; include=\"http://www.w3.org/ns/ldp#PreferEmptyContainer\"")
@@ -581,59 +662,61 @@ func TestLDPPreferEmptyHeader(t *testing.T) {
 	assert.Equal(t, 200, response.StatusCode)
 	assert.Equal(t, "return=representation", response.Header.Get("Preference-Applied"))
 
-	g = NewGraph(testServer.URL + "/_test/")
+	g = NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	body, err = ioutil.ReadAll(response.Body)
 	response.Body.Close()
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
-	assert.Nil(t, g.One(NewResource("/_test/abc"), nil, nil))
+	assert.Nil(t, g.One(NewResource("/"+testFolderPath+"/abc"), nil, nil))
 }
 
 /* Disabled tests until the LDPWG decides on which resources the Link headers apply. */
 
 func TestLDPLinkHeaders(t *testing.T) {
-	request, err := http.NewRequest("HEAD", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.False(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("OPTIONS", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("OPTIONS", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("OPTIONS", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("OPTIONS", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.False(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.False(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -641,13 +724,13 @@ func TestLDPLinkHeaders(t *testing.T) {
 	assert.True(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#Resource"))
 	assert.False(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.False(t, ParseLinkHeader(strings.Join(response.Header["Link"], ", ")).MatchURI("http://www.w3.org/ns/ldp#BasicContainer"))
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -663,18 +746,20 @@ func TestLDPLinkHeaders(t *testing.T) {
 }
 
 func TestStreaming(t *testing.T) {
+	testServer := getFreshServer()
+
 	Streaming = true
 	defer func() {
 		Streaming = false
 	}()
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/abc", strings.NewReader("<a> <b> <c> ."))
+	request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<a> <b> <c> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -684,7 +769,7 @@ func TestStreaming(t *testing.T) {
 	assert.Equal(t, 200, response.StatusCode)
 	assert.Equal(t, "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<a>\n    <b> <c> .\n\n", string(body))
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -692,14 +777,16 @@ func TestStreaming(t *testing.T) {
 }
 
 func TestPOSTSPARQL(t *testing.T) {
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("INSERT DATA { <a> <b> <c>, <c0> . }"))
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("INSERT DATA { <a> <b> <c>, <c0> . }"))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/sparql-update")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("DELETE DATA { <a> <b> <c> . }"))
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("DELETE DATA { <a> <b> <c> . }"))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/sparql-update")
 	response, err = httpClient.Do(request)
@@ -708,21 +795,23 @@ func TestPOSTSPARQL(t *testing.T) {
 }
 
 func TestPOSTTurtle(t *testing.T) {
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("<a> <b> <c1> ."))
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<a> <b> <c1> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("<a> <b> <c2> ."))
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<a> <b> <c2> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -734,14 +823,16 @@ func TestPOSTTurtle(t *testing.T) {
 }
 
 func TestPATCHJson(t *testing.T) {
-	request, err := http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader(`{"a":{"b":[{"type":"uri","value":"c"}]}}`))
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader(`{"a":{"b":[{"type":"uri","value":"c"}]}}`))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/json")
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -753,7 +844,9 @@ func TestPATCHJson(t *testing.T) {
 }
 
 func TestPATCHSPARQL(t *testing.T) {
-	request, err := http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader(""))
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader(""))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/sparql-update")
 	response, err := httpClient.Do(request)
@@ -764,7 +857,7 @@ func TestPATCHSPARQL(t *testing.T) {
 	assert.Equal(t, 400, response.StatusCode)
 
 	sparqlData := `INSERT DATA { <http://a.com> <http://b.com> <http://c.com> . } ; INSERT DATA { <http://a.com> <http://b.com> "123"^^<http://www.w3.org/2001/XMLSchema#int> . }`
-	request, err = http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader(sparqlData))
+	request, err = http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader(sparqlData))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/sparql-update")
 	response, err = httpClient.Do(request)
@@ -774,12 +867,12 @@ func TestPATCHSPARQL(t *testing.T) {
 	assert.Empty(t, string(body))
 	assert.Equal(t, 200, response.StatusCode)
 
-	g := NewGraph(testServer.URL + "/_test/abc")
-	g.LoadURI(testServer.URL + "/_test/abc")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/abc")
+	g.LoadURI(testServer.URL + "/" + testFolderPath + "/abc")
 	assert.NotNil(t, g.One(NewResource("http://a.com"), NewResource("http://b.com"), NewResource("http://c.com")))
 
 	sparqlData = `DELETE DATA { <http://a.com> <http://b.com> <http://c.com>  . }; DELETE DATA { <http://a.com> <http://b.com> "123"^^<http://www.w3.org/2001/XMLSchema#int> . }`
-	request, err = http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader(sparqlData))
+	request, err = http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader(sparqlData))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/sparql-update")
 	response, err = httpClient.Do(request)
@@ -789,27 +882,27 @@ func TestPATCHSPARQL(t *testing.T) {
 	assert.Empty(t, string(body))
 	assert.Equal(t, 200, response.StatusCode)
 
-	g = NewGraph(testServer.URL + "/_test/abc")
-	g.LoadURI(testServer.URL + "/_test/abc")
+	g = NewGraph(testServer.URL + "/" + testFolderPath + "/abc")
+	g.LoadURI(testServer.URL + "/" + testFolderPath + "/abc")
 	assert.Nil(t, g.One(NewResource("http://a.com"), NewResource("http://b.com"), NewResource("http://c.com")))
 }
 
 func TestPATCHFailParse(t *testing.T) {
+	testServer := getFreshServer()
 	sparqlData := `I { <a> <b> <c> . }`
-	request, err := http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader(sparqlData))
+	request, err := http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader(sparqlData))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/sparql-update")
+
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 }
 
 func TestPATCHFileNoExist(t *testing.T) {
-	file := "_test/fff"
+	testServer := getFreshServer()
+	file := testFolderPath + "/fff"
 	sparqlData := `INSERT DATA { <a> <b> <c> . }`
-
-	_, err := os.Stat(file)
-	assert.True(t, os.IsNotExist(err))
 
 	request, err := http.NewRequest("PATCH", testServer.URL+"/"+file, strings.NewReader(sparqlData))
 	assert.NoError(t, err)
@@ -824,19 +917,18 @@ func TestPATCHFileNoExist(t *testing.T) {
 	data, err := g.Serialize(("text/turtle"))
 	assert.NoError(t, err)
 	assert.Equal(t, "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<a>\n    <b> <c> .\n\n", data)
-
-	// cleanup
-	os.Remove(file)
 }
 
 func TestPUTTurtle(t *testing.T) {
-	request, err := http.NewRequest("DELETE", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ; <h> <i> ."))
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ; <h> <i> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -847,7 +939,7 @@ func TestPUTTurtle(t *testing.T) {
 	assert.Empty(t, string(body))
 	assert.NotEmpty(t, response.Header.Get("Location"))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	request.Header.Add("Accept", "text/turtle")
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -858,15 +950,17 @@ func TestPUTTurtle(t *testing.T) {
 }
 
 func TestPUTRdf(t *testing.T) {
+	testServer := getFreshServer()
+
 	for ext, ctype := range mimeRdfExt {
-		request, err := http.NewRequest("PUT", testServer.URL+"/_test/abc"+ext, nil)
+		request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc"+ext, nil)
 		assert.NoError(t, err)
 		request.Header.Add("Content-Type", ctype)
 		response, err := httpClient.Do(request)
 		assert.NoError(t, err)
 		assert.Equal(t, 201, response.StatusCode)
 
-		request, err = http.NewRequest("DELETE", testServer.URL+"/_test/abc"+ext, nil)
+		request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/abc"+ext, nil)
 		assert.NoError(t, err)
 		response, err = httpClient.Do(request)
 		assert.NoError(t, err)
@@ -875,7 +969,9 @@ func TestPUTRdf(t *testing.T) {
 }
 
 func TestHEAD(t *testing.T) {
-	request, err := http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
@@ -888,7 +984,9 @@ func TestHEAD(t *testing.T) {
 }
 
 func TestGetUnsupportedMediaType(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	response, err := httpClient.Do(request)
@@ -898,7 +996,9 @@ func TestGetUnsupportedMediaType(t *testing.T) {
 }
 
 func TestAcceptHeaderWildcard(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "*/*")
 	response, err := httpClient.Do(request)
@@ -910,7 +1010,9 @@ func TestAcceptHeaderWildcard(t *testing.T) {
 }
 
 func TestCTypeServeDefault(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
@@ -921,7 +1023,9 @@ func TestCTypeServeDefault(t *testing.T) {
 }
 
 func TestCTypeFailForXHTMLXML(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/xml,application/xml,application/xhtml+xml,text/html;q=0.5,text/plain,image/png,/;q=0.1,application/rdf+xml,text/n3,text/turtle")
 	response, err := httpClient.Do(request)
@@ -934,7 +1038,9 @@ func TestCTypeFailForXHTMLXML(t *testing.T) {
 }
 
 func TestIfMatch(t *testing.T) {
-	request, err := http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
@@ -942,21 +1048,21 @@ func TestIfMatch(t *testing.T) {
 	ETag := response.Header.Get("ETag")
 	newTag := ETag[:len(ETag)-1] + "1\""
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("If-Match", ETag+", "+newTag)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("If-Match", newTag)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 412, response.StatusCode)
 
-	request, err = http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	request.Header.Add("If-Match", newTag)
@@ -964,7 +1070,7 @@ func TestIfMatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 412, response.StatusCode)
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	request.Header.Add("If-Match", newTag)
@@ -972,7 +1078,7 @@ func TestIfMatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 412, response.StatusCode)
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -984,7 +1090,9 @@ func TestIfMatch(t *testing.T) {
 }
 
 func TestIfNoneMatch(t *testing.T) {
-	request, err := http.NewRequest("HEAD", testServer.URL+"/_test/", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
@@ -992,14 +1100,14 @@ func TestIfNoneMatch(t *testing.T) {
 
 	ETag := response.Header.Get("ETag")
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("If-None-Match", ETag)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 304, response.StatusCode)
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("If-None-Match", ETag)
 	request.Header.Add("Accept", "text/html")
@@ -1007,7 +1115,7 @@ func TestIfNoneMatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -1016,21 +1124,21 @@ func TestIfNoneMatch(t *testing.T) {
 	ETag = response.Header.Get("ETag")
 	newTag := ETag[:len(ETag)-1] + "1\""
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("If-None-Match", ETag)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 304, response.StatusCode)
 
-	request, err = http.NewRequest("HEAD", testServer.URL+"/_test/abc", nil)
+	request, err = http.NewRequest("HEAD", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("If-None-Match", ETag+", "+newTag)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("If-None-Match", ETag)
@@ -1038,7 +1146,7 @@ func TestIfNoneMatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 412, response.StatusCode)
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("If-None-Match", ETag)
@@ -1046,7 +1154,7 @@ func TestIfNoneMatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 412, response.StatusCode)
 
-	request, err = http.NewRequest("PATCH", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("PATCH", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("If-None-Match", ETag)
@@ -1054,7 +1162,7 @@ func TestIfNoneMatch(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 412, response.StatusCode)
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/abc", strings.NewReader("<d> <e> <f> ."))
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("<d> <e> <f> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	request.Header.Add("If-None-Match", newTag)
@@ -1064,7 +1172,9 @@ func TestIfNoneMatch(t *testing.T) {
 }
 
 func TestGetJsonLd(t *testing.T) {
-	request, err := http.NewRequest("GET", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "application/ld+json")
 	response, err := httpClient.Do(request)
@@ -1073,12 +1183,12 @@ func TestGetJsonLd(t *testing.T) {
 	body, err := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 
-	d := testServer.URL + "/_test/d"
-	e := testServer.URL + "/_test/e"
-	f := testServer.URL + "/_test/f"
+	d := testServer.URL + "/" + testFolderPath + "/d"
+	e := testServer.URL + "/" + testFolderPath + "/e"
+	f := testServer.URL + "/" + testFolderPath + "/f"
 	assert.Equal(t, fmt.Sprintf(`[{"@id":"%s","%s":[{"@id":"%s"}]}]`, d, e, f), string(body))
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "application/ld+json")
 	response, err = httpClient.Do(request)
@@ -1087,7 +1197,9 @@ func TestGetJsonLd(t *testing.T) {
 }
 
 func TestPOSTForm(t *testing.T) {
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	response, err := httpClient.Do(request)
@@ -1096,6 +1208,7 @@ func TestPOSTForm(t *testing.T) {
 }
 
 func TestPOSTMultiForm(t *testing.T) {
+	testServer := getFreshServer()
 	path := "tests/img.jpg"
 	file, err := os.Open(path)
 	defer file.Close()
@@ -1118,13 +1231,13 @@ func TestPOSTMultiForm(t *testing.T) {
 		errChan <- multiWriter.Close()
 	}()
 
-	request, err := http.NewRequest("POST", testServer.URL+"/_test/", bodyReader)
+	request, err := http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/", bodyReader)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "multipart/form-data; boundary="+multiWriter.Boundary())
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
-	assert.Equal(t, testServer.URL+"/_test/img.jpg", response.Header.Get("Location"))
+	assert.Equal(t, testServer.URL+"/"+testFolderPath+"/img.jpg", response.Header.Get("Location"))
 
 	request, err = http.NewRequest("DELETE", response.Header.Get("Location"), nil)
 	assert.NoError(t, err)
@@ -1134,14 +1247,16 @@ func TestPOSTMultiForm(t *testing.T) {
 }
 
 func TestLISTDIR(t *testing.T) {
-	request, err := http.NewRequest("MKCOL", testServer.URL+"/_test/dir", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("MKCOL", testServer.URL+"/"+testFolderPath+"/dir", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	response.Body.Close()
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("POST", testServer.URL+"/_test/abc", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/abc> ."))
+	request, err = http.NewRequest("POST", testServer.URL+"/"+testFolderPath+"/abc", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/abc> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -1149,33 +1264,35 @@ func TestLISTDIR(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/turtle")
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	g := NewGraph(testServer.URL + "/_test/")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	body, err := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
 
-	f := NewResource(testServer.URL + "/_test/abc")
+	f := NewResource(testServer.URL + "/" + testFolderPath + "/abc")
 	assert.NotNil(t, g.One(f, ns.stat.Get("size"), nil))
 	assert.NotNil(t, g.One(f, ns.stat.Get("mtime"), nil))
 	assert.NotNil(t, g.One(f, ns.rdf.Get("type"), NewResource("http://example.org/abc")))
 	assert.Equal(t, g.One(f, ns.rdf.Get("type"), NewResource("http://example.org/abc")).Object, NewResource("http://example.org/abc"))
 	assert.Equal(t, g.One(f, ns.rdf.Get("type"), ns.ldp.Get("Resource")).Object, ns.ldp.Get("Resource"))
 
-	d := NewResource(testServer.URL + "/_test/dir/")
+	d := NewResource(testServer.URL + "/" + testFolderPath + "/dir/")
 	assert.Equal(t, g.One(d, ns.rdf.Get("type"), ns.ldp.Get("Container")).Object, ns.ldp.Get("Container"))
 	assert.NotNil(t, g.One(d, ns.stat.Get("size"), nil))
 	assert.NotNil(t, g.One(d, ns.stat.Get("mtime"), nil))
 }
 
 func TestGlob(t *testing.T) {
-	request, err := http.NewRequest("PUT", testServer.URL+"/_test/1", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/one>;\n"+
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/1", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/one>;\n"+
 		"    <http://example.org/b> <#c> .\n    <#c> a <http://example.org/e> ."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
@@ -1183,14 +1300,14 @@ func TestGlob(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("PUT", testServer.URL+"/_test/2", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/two>."))
+	request, err = http.NewRequest("PUT", testServer.URL+"/"+testFolderPath+"/2", strings.NewReader("@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\n<> a <http://example.org/two>."))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/*", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/*", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
 	response, err = httpClient.Do(request)
@@ -1200,19 +1317,19 @@ func TestGlob(t *testing.T) {
 	body, err := ioutil.ReadAll(response.Body)
 	response.Body.Close()
 
-	g := NewGraph(testServer.URL + "/_test/")
+	g := NewGraph(testServer.URL + "/" + testFolderPath + "/")
 	g.Parse(strings.NewReader(string(body)), "text/turtle")
 	assert.NotEmpty(t, g)
-	assert.Equal(t, g.One(NewResource(testServer.URL+"/_test/1"), ns.rdf.Get("type"), NewResource("http://example.org/one")).Object, NewResource("http://example.org/one"))
-	assert.Equal(t, g.One(NewResource(testServer.URL+"/_test/2"), ns.rdf.Get("type"), NewResource("http://example.org/two")).Object, NewResource("http://example.org/two"))
+	assert.Equal(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/1"), ns.rdf.Get("type"), NewResource("http://example.org/one")).Object, NewResource("http://example.org/one"))
+	assert.Equal(t, g.One(NewResource(testServer.URL+"/"+testFolderPath+"/2"), ns.rdf.Get("type"), NewResource("http://example.org/two")).Object, NewResource("http://example.org/two"))
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/1", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/1", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/2", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/2", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -1220,7 +1337,9 @@ func TestGlob(t *testing.T) {
 }
 
 func TestDELETEFile(t *testing.T) {
-	request, err := http.NewRequest("DELETE", testServer.URL+"/_test/abc", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/abc", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
@@ -1228,25 +1347,27 @@ func TestDELETEFile(t *testing.T) {
 }
 
 func TestDELETEFolders(t *testing.T) {
-	request, err := http.NewRequest("DELETE", testServer.URL+"/_test/dir", nil)
+	testServer := getFreshServer()
+
+	request, err := http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/dir", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 200, response.StatusCode)
 
-	request, err = http.NewRequest("GET", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("GET", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
 	assert.Equal(t, 404, response.StatusCode)
 
-	request, err = http.NewRequest("DELETE", testServer.URL+"/_test/", nil)
+	request, err = http.NewRequest("DELETE", testServer.URL+"/"+testFolderPath+"/", nil)
 	assert.NoError(t, err)
 	response, err = httpClient.Do(request)
 	assert.NoError(t, err)
@@ -1260,6 +1381,8 @@ func TestDELETEFolders(t *testing.T) {
 }
 
 func TestInvalidMethod(t *testing.T) {
+	testServer := getFreshServer()
+
 	request, err := http.NewRequest("TEST", testServer.URL+"/test", nil)
 	assert.NoError(t, err)
 	response, err := httpClient.Do(request)
@@ -1268,6 +1391,8 @@ func TestInvalidMethod(t *testing.T) {
 }
 
 func TestInvalidAccept(t *testing.T) {
+	testServer := getFreshServer()
+
 	request, err := http.NewRequest("GET", testServer.URL+"/test", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Accept", "text/csv")
@@ -1277,6 +1402,8 @@ func TestInvalidAccept(t *testing.T) {
 }
 
 func TestInvalidContent(t *testing.T) {
+	testServer := getFreshServer()
+
 	request, err := http.NewRequest("POST", testServer.URL+"/test", strings.NewReader("a\tb\tc\n"))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/csv")
@@ -1286,6 +1413,7 @@ func TestInvalidContent(t *testing.T) {
 }
 
 func TestRawContent(t *testing.T) {
+	testServer := getFreshServer()
 	path := "./tests/img.jpg"
 	file, err := os.Open(path)
 	defer file.Close()
@@ -1320,6 +1448,8 @@ func TestRawContent(t *testing.T) {
 }
 
 func BenchmarkPUT(b *testing.B) {
+	testServer := getFreshServer()
+
 	e := 0
 	for i := 0; i < b.N; i++ {
 		request, _ := http.NewRequest("PUT", testServer.URL+"/_bench/test", strings.NewReader("<d> <e> <f> ."))
@@ -1335,6 +1465,8 @@ func BenchmarkPUT(b *testing.B) {
 }
 
 func BenchmarkPUTNew(b *testing.B) {
+	testServer := getFreshServer()
+
 	e := 0
 	for i := 0; i < b.N; i++ {
 		request, _ := http.NewRequest("PUT", testServer.URL+fmt.Sprintf("/_bench/test%d", i), strings.NewReader("<d> <e> <f> ."))
@@ -1350,6 +1482,8 @@ func BenchmarkPUTNew(b *testing.B) {
 }
 
 func BenchmarkPATCH(b *testing.B) {
+	testServer := getFreshServer()
+
 	e := 0
 	for i := 0; i < b.N; i++ {
 		request, _ := http.NewRequest("PATCH", testServer.URL+"/_bench/test", strings.NewReader(`{"a":{"b":[{"type":"literal","value":"`+fmt.Sprintf("%d", b.N)+`"}]}}`))
@@ -1365,6 +1499,8 @@ func BenchmarkPATCH(b *testing.B) {
 }
 
 func BenchmarkGETjson(b *testing.B) {
+	testServer := getFreshServer()
+
 	e := 0
 	for i := 0; i < b.N; i++ {
 		request, _ := http.NewRequest("GET", testServer.URL+"/_bench/test", nil)
@@ -1380,6 +1516,8 @@ func BenchmarkGETjson(b *testing.B) {
 }
 
 func BenchmarkGETturtle(b *testing.B) {
+	testServer := getFreshServer()
+
 	e := 0
 	for i := 0; i < b.N; i++ {
 		request, _ := http.NewRequest("GET", testServer.URL+"/_bench/test", nil)
@@ -1395,6 +1533,8 @@ func BenchmarkGETturtle(b *testing.B) {
 }
 
 func BenchmarkGETxml(b *testing.B) {
+	testServer := getFreshServer()
+
 	e := 0
 	for i := 0; i < b.N; i++ {
 		request, _ := http.NewRequest("GET", testServer.URL+"/_bench/test", nil)

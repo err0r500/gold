@@ -2,8 +2,7 @@
 package gold
 
 import (
-	"crypto/rand"
-	"crypto/tls"
+	"log"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,201 +11,253 @@ import (
 )
 
 const (
-	aclDir = "/_test/acldir/"
+	aclDir = "/" + testFolderPath + "/acldir/"
 )
 
 func TestACLInit(t *testing.T) {
-	var err error
+	testServer := getFreshServer()
+	u1Path, u1Client, u1Graph, err := GetClient(TestUser1, testServer.URL+"/"+testFolderPath, false)
+	assert.NoError(t, err)
+	u2Path, u2Client, u2Graph, err := GetClient(TestUser2, testServer.URL+"/"+testFolderPath, true)
+	assert.NoError(t, err)
 
-	user1 = testServer.URL + "/_test/user1#id"
-	var user1_account = webidAccount{
-		WebID:         user1,
-		BaseURI:       testServer.URL + "/_test/",
-		PrefURI:       testServer.URL + "/_test/Preferences/prefs.ttl",
-		PubTypeIndex:  testServer.URL + "/_test/Preferences/pubTypeIndex.ttl",
-		PrivTypeIndex: testServer.URL + "/_test/Preferences/privTypeIndex.ttl",
-	}
-	user1g := NewWebIDProfile(user1_account)
-	user1g, user1k, user1p, err = AddProfileKeys(user1, user1g)
-	user1cert, err = NewRSAcert(user1, "User 1", user1k)
-	assert.NoError(t, err)
-	user1h = &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Certificates:       []tls.Certificate{*user1cert},
-				InsecureSkipVerify: true,
-			},
-		},
-	}
-	user1n3, err := user1g.Serialize("text/turtle")
-	assert.NoError(t, err)
-	req1, err := http.NewRequest("PUT", user1, strings.NewReader(user1n3))
-	assert.NoError(t, err)
-	resp1, err := httpClient.Do(req1)
-	assert.NoError(t, err)
-	resp1.Body.Close()
-	assert.Equal(t, 201, resp1.StatusCode)
+	t.Run("user1 PUT to create resource", func(t *testing.T) {
+		user1n3, err := u1Graph.Serialize("text/turtle")
+		assert.NoError(t, err)
+		req, err := http.NewRequest("PUT", u1Path, strings.NewReader(user1n3))
+		assert.NoError(t, err)
+		resp, err := httpClient.Do(req)
+		assert.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, 201, resp.StatusCode)
+	})
 
-	user2 = testServer.URL + "/_test/user2#id"
-	var user2_account = webidAccount{
-		WebID:         user2,
-		BaseURI:       testServer.URL + "/_test/",
-		PrefURI:       testServer.URL + "/_test/Preferences/prefs.ttl",
-		PubTypeIndex:  testServer.URL + "/_test/Preferences/pubTypeIndex.ttl",
-		PrivTypeIndex: testServer.URL + "/_test/Preferences/privTypeIndex.ttl",
-	}
-	user2g := NewWebIDProfile(user2_account)
-	user2g, user2k, user2p, err = AddProfileKeys(user2, user2g)
-	user2cert, err = NewRSAcert(user2, "User 2", user2k)
-	assert.NoError(t, err)
-	user2h = &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Certificates:       []tls.Certificate{*user2cert},
-				InsecureSkipVerify: true,
-				Rand:               rand.Reader,
-			},
-		},
-	}
-	user2n3, err := user2g.Serialize("text/turtle")
-	assert.NoError(t, err)
-	req2, err := http.NewRequest("PUT", user2, strings.NewReader(user2n3))
-	assert.NoError(t, err)
-	resp2, err := httpClient.Do(req2)
-	assert.NoError(t, err)
-	resp2.Body.Close()
-	assert.Equal(t, 201, resp2.StatusCode)
+	t.Run("user2 PUT to create resource", func(t *testing.T) {
+		user2n3, err := u2Graph.Serialize("text/turtle")
+		assert.NoError(t, err)
+		req, err := http.NewRequest("PUT", u2Path, strings.NewReader(user2n3))
+		assert.NoError(t, err)
+		resp, err := httpClient.Do(req)
+		assert.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, 201, resp.StatusCode)
+	})
 
-	req1, err = http.NewRequest("GET", user1, nil)
-	assert.NoError(t, err)
-	resp1, err = user1h.Do(req1)
-	assert.NoError(t, err)
-	resp1.Body.Close()
-	assert.Equal(t, user1, resp1.Header.Get("User"))
+	t.Run("user1 GET her resource", func(t *testing.T) {
+		req, err := http.NewRequest("GET", u1Path, nil)
+		assert.NoError(t, err)
+		resp, err := u1Client.Do(req)
+		assert.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, u1Path, resp.Header.Get("User"))
+	})
 
-	req2, err = http.NewRequest("GET", user2, nil)
-	assert.NoError(t, err)
-	resp2, err = user2h.Do(req2)
-	assert.NoError(t, err)
-	resp2.Body.Close()
-	assert.Equal(t, user2, resp2.Header.Get("User"))
+	t.Run("user2 GET her resource", func(t *testing.T) {
+		req, err := http.NewRequest("GET", u2Path, nil)
+		assert.NoError(t, err)
+		resp, err := u2Client.Do(req)
+		assert.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, u2Path, resp.Header.Get("User"))
+	})
 }
 
 func TestNoACLFile(t *testing.T) {
-	request, err := http.NewRequest("MKCOL", testServer.URL+aclDir, nil)
-	assert.NoError(t, err)
-	response, err := user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 201, response.StatusCode)
+	testServer := getFreshServer()
+	collectionLink := ""
+	fileLink := ""
 
-	acl := ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
-	assert.NotNil(t, acl)
+	t.Run("anyone can create a collection", func(t *testing.T) {
+		request, err := http.NewRequest("MKCOL", testServer.URL+aclDir, nil)
+		assert.NoError(t, err)
 
-	request, err = http.NewRequest("PUT", acl, strings.NewReader(""))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/turtle")
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 201, response.StatusCode)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 201, response.StatusCode)
 
-	request, err = http.NewRequest("PUT", testServer.URL+aclDir+"abc", strings.NewReader("<a> <b> <c> ."))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/turtle")
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 201, response.StatusCode)
+		collectionLink = ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
+		assert.NotNil(t, collectionLink)
+	})
 
-	acl = ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
-	assert.NotNil(t, acl)
+	t.Run("anyone can update the collection", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", collectionLink, strings.NewReader(""))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/turtle")
 
-	request, err = http.NewRequest("PUT", acl, strings.NewReader(""))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/turtle")
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 201, response.StatusCode)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	request, err = http.NewRequest("HEAD", acl, nil)
-	assert.NoError(t, err)
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("anyone can create a resource in the collection", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", testServer.URL+aclDir+"abc", strings.NewReader("<a> <b> <c> ."))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/turtle")
+
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 201, response.StatusCode)
+
+		fileLink = ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
+		assert.NotNil(t, fileLink)
+	})
+
+	t.Run("anyone can update the resource in the collection", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", fileLink, strings.NewReader(""))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/turtle")
+
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 201, response.StatusCode)
+	})
+
+	t.Run("anyone can get info about the resource in the collection", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", fileLink, nil)
+		assert.NoError(t, err)
+
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+	})
 }
 
 func TestResourceKey(t *testing.T) {
+	testServer := getFreshServer()
+	user1, u1Client, _, err := GetClient(TestUser1, testServer.URL+"/"+testFolderPath, false)
+	assert.NoError(t, err)
+	_, u2Client, _, err := GetClient(TestUser2, testServer.URL+"/"+testFolderPath, true)
+	assert.NoError(t, err)
+
 	key := "aaabbbccc"
+	acl := ""
 
-	request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
-	assert.NoError(t, err)
-	response, err := user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+	collectionLink := ""
 
-	acl := ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
+	t.Run("anyone can create a collection", func(t *testing.T) {
+		request, err := http.NewRequest("MKCOL", testServer.URL+aclDir, nil)
+		assert.NoError(t, err)
 
-	body := "<#Owner>" +
-		"	a <http://www.w3.org/ns/auth/acl#Authorization> ;" +
-		"	<http://www.w3.org/ns/auth/acl#accessTo> <" + testServer.URL + aclDir + ">, <" + acl + ">;" +
-		"	<http://www.w3.org/ns/auth/acl#agent> <" + user1 + ">;" +
-		"	<http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Read>, <http://www.w3.org/ns/auth/acl#Write> ." +
-		"<#PublicWithKey>" +
-		"	a <http://www.w3.org/ns/auth/acl#Authorization> ;" +
-		"	<http://www.w3.org/ns/auth/acl#accessTo> <" + testServer.URL + aclDir + ">;" +
-		"	<http://www.w3.org/ns/auth/acl#resourceKey> \"" + key + "\";" +
-		"	<http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Read> ."
-	request, err = http.NewRequest("PUT", acl, strings.NewReader(body))
-	assert.NoError(t, err)
-	request.Header.Add("Content-Type", "text/turtle")
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 201, response.StatusCode)
 
-	// user1
-	request, err = http.NewRequest("HEAD", acl, nil)
-	assert.NoError(t, err)
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+		collectionLink = ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
+		assert.NotNil(t, collectionLink)
+	})
 
-	request, err = http.NewRequest("HEAD", testServer.URL+aclDir, nil)
-	assert.NoError(t, err)
-	response, err = user1h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("anyone can update the collection", func(t *testing.T) {
+		request, err := http.NewRequest("PUT", collectionLink, strings.NewReader(""))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/turtle")
 
-	// user2
-	request, err = http.NewRequest("HEAD", testServer.URL+aclDir+"?key="+key, nil)
-	assert.NoError(t, err)
-	response, err = user2h.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 201, response.StatusCode)
+	})
 
-	// agent
-	request, err = http.NewRequest("HEAD", testServer.URL+aclDir+"?key="+key, nil)
-	assert.NoError(t, err)
-	response, err = httpClient.Do(request)
-	assert.NoError(t, err)
-	response.Body.Close()
-	assert.Equal(t, 200, response.StatusCode)
+	t.Run("user1 lists the ACL dir", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
+		assert.NoError(t, err)
+		response, err := u1Client.Do(request)
+		assert.NoError(t, err)
+		log.Println(response.Body)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+
+		acl = ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
+	})
+
+	t.Run("user1 adds a public key to the ACL resource", func(t *testing.T) {
+		body := "<#Owner>" +
+			"	a <http://www.w3.org/ns/auth/acl#Authorization> ;" +
+			"	<http://www.w3.org/ns/auth/acl#accessTo> <" + testServer.URL + aclDir + ">, <" + collectionLink + ">;" +
+			"	<http://www.w3.org/ns/auth/acl#agent> <" + user1 + ">;" +
+			"	<http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Read>, <http://www.w3.org/ns/auth/acl#Write> ." +
+			"<#PublicWithKey>" +
+			"	a <http://www.w3.org/ns/auth/acl#Authorization> ;" +
+			"	<http://www.w3.org/ns/auth/acl#accessTo> <" + testServer.URL + aclDir + ">;" +
+			"	<http://www.w3.org/ns/auth/acl#resourceKey> \"" + key + "\";" +
+			"	<http://www.w3.org/ns/auth/acl#mode> <http://www.w3.org/ns/auth/acl#Read> ."
+
+		request, err := http.NewRequest("PUT", collectionLink, strings.NewReader(body))
+		assert.NoError(t, err)
+		request.Header.Add("Content-Type", "text/turtle")
+
+		response, err := u1Client.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+	})
+
+	//t.Run("anyone can create a resource in the collection", func(t *testing.T) {
+	//	request, err := http.NewRequest("PUT", testServer.URL+aclDir+"abc", strings.NewReader("<a> <b> <c> ."))
+	//	assert.NoError(t, err)
+	//	request.Header.Add("Content-Type", "text/turtle")
+	//
+	//	response, err := u1Client.Do(request)
+	//	assert.NoError(t, err)
+	//	response.Body.Close()
+	//	assert.Equal(t, 201, response.StatusCode)
+	//
+	//	fileLink := ParseLinkHeader(response.Header.Get("Link")).MatchRel("acl")
+	//	assert.NotNil(t, fileLink)
+	//})
+
+	t.Run("user1 is able to list the resource in the dir", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
+		assert.NoError(t, err)
+		response, err := u1Client.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+	})
+
+	t.Run("user1 is able to list the resource in the dir using thw link provided", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", collectionLink, nil)
+		assert.NoError(t, err)
+		response, err := u1Client.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+	})
+
+	t.Run("user2 can list the resource using the key", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", testServer.URL+aclDir+"?key="+key, nil)
+		assert.NoError(t, err)
+		response, err := u2Client.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+	})
+
+	t.Run("anyone can list the resource using the key", func(t *testing.T) {
+		request, err := http.NewRequest("HEAD", testServer.URL+aclDir+"?key="+key, nil)
+		assert.NoError(t, err)
+		response, err := httpClient.Do(request)
+		assert.NoError(t, err)
+		response.Body.Close()
+		assert.Equal(t, 200, response.StatusCode)
+	})
 }
 
 func TestACLOrigin(t *testing.T) {
+	testServer := getFreshServer()
+	user1, u1Client, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
 	origin1 := "http://example.org/"
 	origin2 := "http://example.com/"
 
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
-	response, err := user1h.Do(request)
+	response, err := u1Client.Do(request)
 	assert.NoError(t, err)
 	response.Body.Close()
 	assert.Equal(t, 200, response.StatusCode)
@@ -225,7 +276,7 @@ func TestACLOrigin(t *testing.T) {
 	request, err = http.NewRequest("PUT", acl, strings.NewReader(body))
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
-	response, err = user1h.Do(request)
+	response, err = u1Client.Do(request)
 	assert.NoError(t, err)
 	response.Body.Close()
 	assert.Equal(t, 200, response.StatusCode)
@@ -233,7 +284,7 @@ func TestACLOrigin(t *testing.T) {
 	// user1
 	request, err = http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
-	response, err = user1h.Do(request)
+	response, err = u1Client.Do(request)
 	assert.NoError(t, err)
 	response.Body.Close()
 	assert.Equal(t, 200, response.StatusCode)
@@ -241,7 +292,7 @@ func TestACLOrigin(t *testing.T) {
 	request, err = http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
 	request.Header.Add("Origin", origin1)
-	response, err = user1h.Do(request)
+	response, err = u1Client.Do(request)
 	assert.NoError(t, err)
 	response.Body.Close()
 	assert.Equal(t, 200, response.StatusCode)
@@ -249,7 +300,7 @@ func TestACLOrigin(t *testing.T) {
 	request, err = http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
 	request.Header.Add("Origin", origin2)
-	response, err = user1h.Do(request)
+	response, err = u1Client.Do(request)
 	assert.NoError(t, err)
 	response.Body.Close()
 	assert.Equal(t, 403, response.StatusCode)
@@ -280,6 +331,12 @@ func TestACLOrigin(t *testing.T) {
 }
 
 func TestACLOwnerOnly(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -372,6 +429,12 @@ func TestACLOwnerOnly(t *testing.T) {
 }
 
 func TestACLReadOnly(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -463,6 +526,12 @@ func TestACLReadOnly(t *testing.T) {
 }
 
 func TestACLGlob(t *testing.T) {
+	testServer := getFreshServer()
+	_, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("GET", testServer.URL+aclDir+"*", nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
@@ -497,6 +566,12 @@ func TestACLGlob(t *testing.T) {
 }
 
 func TestACLAppendOnly(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir+"abc", nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -593,6 +668,12 @@ func TestACLAppendOnly(t *testing.T) {
 }
 
 func TestACLRestricted(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	user2, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir+"abc", nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -689,6 +770,12 @@ func TestACLRestricted(t *testing.T) {
 }
 
 func TestACLPathWithSpaces(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("POST", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
 	request.Header.Add("Content-Type", "text/turtle")
@@ -747,6 +834,12 @@ func TestACLPathWithSpaces(t *testing.T) {
 }
 
 func TestACLGroup(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	user2, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir+"abc", nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -861,6 +954,12 @@ func TestACLGroup(t *testing.T) {
 }
 
 func TestACLDefaultForNew(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("HEAD", testServer.URL+aclDir, nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -952,6 +1051,12 @@ func TestACLDefaultForNew(t *testing.T) {
 }
 
 func TestACLWebIDDelegation(t *testing.T) {
+	testServer := getFreshServer()
+	user1, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+	user2, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	assert.NoError(t, err)
+
 	// add delegation
 	sparqlData := `INSERT DATA { <` + user1 + `> <http://www.w3.org/ns/auth/acl#delegates> <` + user2 + `> . }`
 	request, err := http.NewRequest("PATCH", user1, strings.NewReader(sparqlData))
@@ -1001,6 +1106,10 @@ func TestACLWebIDDelegation(t *testing.T) {
 }
 
 func TestACLCleanUp(t *testing.T) {
+	testServer := getFreshServer()
+	_, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	assert.NoError(t, err)
+
 	request, err := http.NewRequest("DELETE", testServer.URL+aclDir+"abcd", nil)
 	assert.NoError(t, err)
 	response, err := user1h.Do(request)
@@ -1024,6 +1133,11 @@ func TestACLCleanUp(t *testing.T) {
 }
 
 func TestACLwalkPath(t *testing.T) {
+	_, config := getFreshServerWithConfig()
+	//_, user1h, _, err := GetClient(TestUser1, testServer.URL+"/_test", false)
+	//assert.NoError(t, err)
+	//_, user2h, _, err := GetClient(TestUser2, testServer.URL+"/_test", true)
+	//assert.NoError(t, err)
 	config.Debug = false
 	s := NewServer(config)
 	req := &httpRequest{nil, s, "", "", "", false}
